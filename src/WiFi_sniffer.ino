@@ -16,44 +16,39 @@
 */
 
 #include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
 #include <ArduinoJson.h>
 // #include <credentials.h>
 #include <set>
 #include <string>
 #include "./functions.h"
-#include "./mqtt.h"
 
 #define disable 0
 #define enable  1
 #define SENDTIME 30000
 #define MAXDEVICES 60
-#define JBUFFER 15+ (MAXDEVICES * 40)
 #define PURGETIME 600000
-#define MINRSSI -70
+#define MINRSSI -85
 
 // uint8_t channel = 1;
 unsigned int channel = 1;
 int clients_known_count_old, aps_known_count_old;
 unsigned long sendEntry, deleteEntry;
-char jsonString[JBUFFER];
-
 
 String device[MAXDEVICES];
 int nbrDevices = 0;
 int usedChannels[15];
 
-#ifndef CREDENTIALS
-#define mySSID "projectJarno"
-#define myPASSWORD "nuc12345"
-#endif
+const char* scannerID = "0001";
 
-StaticJsonDocument<JBUFFER>  jsonBuffer;
+const char* mySSID = "projectJarno";
+const char* myPASSWORD = "nuc12345";
+
+String serverName = "http://192.168.88.253:5000/";
 
 void setup() {
 	Serial.begin(115200);
-	Serial.printf("\n\nSDK version:%s\n\r", system_get_sdk_version());
-	Serial.println(F("Human detector by Andreas Spiess. ESP8266 mini-sniff by Ray Burnette http://www.hackster.io/rayburne/projects"));
-	Serial.println(F("Based on the work of Ray Burnette http://www.hackster.io/rayburne/projects"));
+	Serial.printf("Booting up as scanner %s", scannerID);
 
 	wifi_set_opmode(STATION_MODE);            // Promiscuous works only with station mode
 	wifi_set_channel(channel);
@@ -133,7 +128,7 @@ void purgeDevice() {
 	}
   	for (int u = 0; u < aps_known_count; u++) {
 		if ((millis() - aps_known[u].lastDiscoveredTime) > PURGETIME) {
-		Serial.print("purge Bacon" );
+		Serial.print("purge Beacon" );
 		Serial.println(u);
 		for (int i = u; i < aps_known_count; i++) memcpy(&aps_known[i], &aps_known[i + 1], sizeof(aps_known[i]));
 		aps_known_count--;
@@ -169,40 +164,30 @@ void showDevices() {
 		Serial.print(clients_known[u].rssi);
 		Serial.print(" channel ");
 		Serial.println(clients_known[u].channel);
-  	}
+	}
 }
 
 void sendDevices() {
-  	String deviceMac;
+	// Disable scanner to connect to WiFi
+	wifi_promiscuous_enable(disable);
+	connectToWiFi();
+  	WiFiClient client;
+	HTTPClient http;
 
-  	// Setup MQTT
-  	wifi_promiscuous_enable(disable);
-  	connectToWiFi();
-  	client.setBufferSize(2048); // Avoids tampering with PubSubClient.h
-  	client.setServer(mqttServer, 1883);
-  	while (!client.connected()) {
-    	Serial.println("Connecting to MQTT...");
+	String deviceMac;
 
-		if (client.connect("ESP32Client")) {
-			Serial.println("connected");
-		} else {
-			Serial.print("failed with state ");
-			Serial.println(client.state());
-		}
-		yield();
-	}
-
-	// Purge json string
-	jsonBuffer.clear();
-	JsonArray mac = jsonBuffer.createNestedArray("MAC");
-	// JsonArray& rssi = root.createNestedArray("RSSI");
+	JsonDocument doc;
+	JsonDocument subdoc;
 
 	// add Beacons
 	for (int u = 0; u < aps_known_count; u++) {
 		deviceMac = formatMac1(aps_known[u].bssid);
 		if (aps_known[u].rssi > MINRSSI) {
-			mac.add(deviceMac);
-			//    rssi.add(aps_known[u].rssi);
+			subdoc["scannerID"] = scannerID;
+			subdoc["mac"] = deviceMac;
+			subdoc["rssi"] = aps_known[u].rssi;
+			doc.add(subdoc);
+			subdoc.clear();
 		}
 	}
 
@@ -210,25 +195,47 @@ void sendDevices() {
 	for (int u = 0; u < clients_known_count; u++) {
 		deviceMac = formatMac1(clients_known[u].station);
 		if (clients_known[u].rssi > MINRSSI) {
-			mac.add(deviceMac);
-			//    rssi.add(clients_known[u].rssi);
+			subdoc["scannerID"] = scannerID;
+			subdoc["mac"] = deviceMac;
+			subdoc["rssi"] = clients_known[u].rssi;
+			doc.add(subdoc);
+			subdoc.clear();
 		}
 	}
 
+	String requestBody;
 	Serial.println();
-	Serial.printf("number of devices: %02d\n", mac.size());
-	serializeJsonPretty(jsonBuffer,Serial);
-	serializeJson(jsonBuffer,jsonString);
-	//  Serial.println((jsonString));
-	//  Serial.println(root.measureLength());
-  	if (client.publish("Sniffer", jsonString) == 1) Serial.println("Successfully published");
-  	else {
+	// Json for Serial print
+	serializeJsonPretty(doc, Serial);
+	// Json for HTTP POST
+	serializeJson(doc, requestBody);
+	Serial.println();
+
+	// Free resources
+	doc.clear();
+
+	// HTTP request
+	String serverAdress = serverName + "/json-post";
+	http.begin(client, serverAdress);
+	http.addHeader("Content-Type", "application/json");
+
+	int httpResponseCode = http.POST(requestBody);
+
+	if(httpResponseCode>0) {
+
+		String response = http.getString();
+
+		Serial.println(httpResponseCode);
+		Serial.println(response);
+	}
+	else {
+		Serial.printf("Error occured while sending HTTP POST.");
 		Serial.println();
-		Serial.println("!!!!! Not published. Please add #define MQTT_MAX_PACKET_SIZE 2048 at the beginning of PubSubClient.h file");
-		Serial.println();
-  	}
-	client.loop();
-	client.disconnect ();
+	}
+
+	// Free resources
+	http.end();
+
 	delay(100);
 	wifi_promiscuous_enable(enable);
 	sendEntry = millis();
