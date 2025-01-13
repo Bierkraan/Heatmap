@@ -44,7 +44,7 @@ const char* scannerID = "0001";
 const char* mySSID = "projectJarno";
 const char* myPASSWORD = "nuc12345";
 
-String serverName = "http://192.168.88.253:5000/";
+String serverName = "http://192.168.88.2:5000/";
 
 void setup() {
 	Serial.begin(115200);
