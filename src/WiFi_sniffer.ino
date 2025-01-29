@@ -18,7 +18,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <ArduinoJson.h>
-// #include <credentials.h>
+
 #include <set>
 #include <string>
 #include "./functions.h"
@@ -28,9 +28,8 @@
 #define SENDTIME 30000
 #define MAXDEVICES 60
 #define PURGETIME 600000
-#define MINRSSI -85
+#define MINRSSI -82
 
-// uint8_t channel = 1;
 unsigned int channel = 1;
 int clients_known_count_old, aps_known_count_old;
 unsigned long sendEntry, deleteEntry;
@@ -39,12 +38,23 @@ String device[MAXDEVICES];
 int nbrDevices = 0;
 int usedChannels[15];
 
-const char* scannerID = "0001";
+const char* scannerID = "1001";
 
-const char* mySSID = "projectJarno";
+const char* mySSID = "projectHeatmap";
 const char* myPASSWORD = "nuc12345";
 
+// Variables will change:
+int lastState = HIGH; // the previous state from the input pin
+int currentState;     // the current reading from the input pin
+int calibration = 4.0;
+
+uint8_t BUTTON_PIN = 7;
+
+String lastSendTime;
+
 String serverName = "http://192.168.88.2:5000/";
+WiFiClient client;
+HTTPClient http;
 
 void setup() {
 	Serial.begin(115200);
@@ -93,7 +103,6 @@ void loop() {
 		sendDevices();
 	}
 }
-
 
 void connectToWiFi() {
 	delay(10);
@@ -171,8 +180,9 @@ void sendDevices() {
 	// Disable scanner to connect to WiFi
 	wifi_promiscuous_enable(disable);
 	connectToWiFi();
-  	WiFiClient client;
-	HTTPClient http;
+
+	String serverAdressJson = serverName + "/json-post";
+	String serverAdressTime = serverName + "/current-time";
 
 	String deviceMac;
 
@@ -186,6 +196,7 @@ void sendDevices() {
 			subdoc["scannerID"] = scannerID;
 			subdoc["mac"] = deviceMac;
 			subdoc["rssi"] = aps_known[u].rssi;
+			subdoc["calibration"] = calibration;
 			doc.add(subdoc);
 			subdoc.clear();
 		}
@@ -198,6 +209,7 @@ void sendDevices() {
 			subdoc["scannerID"] = scannerID;
 			subdoc["mac"] = deviceMac;
 			subdoc["rssi"] = clients_known[u].rssi;
+			subdoc["calibration"] = calibration;
 			doc.add(subdoc);
 			subdoc.clear();
 		}
@@ -211,30 +223,42 @@ void sendDevices() {
 	serializeJson(doc, requestBody);
 	Serial.println();
 
+	// HTTP request
+	http.begin(client, serverAdressJson);
+	http.addHeader("Content-Type", "application/json");
+
+	int httpResponseCodePost = http.POST(requestBody);
+
 	// Free resources
 	doc.clear();
 
-	// HTTP request
-	String serverAdress = serverName + "/json-post";
-	http.begin(client, serverAdress);
-	http.addHeader("Content-Type", "application/json");
+	if(httpResponseCodePost<=0) {
+		Serial.printf("Error posting JSON:");
+		Serial.println(httpResponseCodePost);
+	}
 
-	int httpResponseCode = http.POST(requestBody);
+	http.end();
+	http.begin(client, serverAdressTime);
 
-	if(httpResponseCode>0) {
+	int httpResponseCodeGet = http.GET();
 
-		String response = http.getString();
-
-		Serial.println(httpResponseCode);
-		Serial.println(response);
+	if(httpResponseCodeGet>0) {
+		lastSendTime = http.getString();
+		Serial.println(lastSendTime);
 	}
 	else {
-		Serial.printf("Error occured while sending HTTP POST.");
-		Serial.println();
+		Serial.printf("Error getting time:");
+		Serial.println(httpResponseCodeGet);
 	}
 
 	// Free resources
 	http.end();
+
+	// read the state of the switch/button:
+	// currentState = digitalRead(BUTTON_PIN);
+
+	// if(currentState == HIGH)
+	// 	Serial.println("Button pressed!");
 
 	delay(100);
 	wifi_promiscuous_enable(enable);
